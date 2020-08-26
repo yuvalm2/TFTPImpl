@@ -36,9 +36,6 @@ class TFTPWriteClient():
         else:
             self.host = host
 
-        # UDP / IP
-        self.socket = socket(AF_INET, SOCK_DGRAM)
-        self.socket.settimeout(TFTPWriteClient.TIMEOUT_IN_SECONDS)
         self.data_dest_port = None
 
     def pick_data_source_port(self):
@@ -86,14 +83,14 @@ class TFTPWriteClient():
 
     def receive_next_packet(self, request_opcode):
         try:
-            return self.socket.recvfrom(1024)  # Todo - Is the choice of buffer size critical?
+            return self.socket.recvfrom(1024)  # Todo - What should be the buffer size?
         except TimeoutError:
             print(f"Request of type {request_opcode} response timed out... Aborting")
             raise
 
     def handle_request_write_ack(self):
         """
-        Awaits for an acknowledgement to the write request sent previously.
+        Awaits for acknowledgement to a previously sent write request .
 
         Returns:
             False if an irrelevant packet is received (and dropped)
@@ -190,16 +187,23 @@ class TFTPWriteClient():
         # Request and set up a connection
         self.init_transfer_state()
 
-        # TODO - Verify that the filename is in netascii and is terminated by a zero byte
-        self.request_write(self.remote_filename, OperationMode.NETASCII)
+        # UDP / IP
+        self.socket = socket(AF_INET, SOCK_DGRAM)
+        self.socket.settimeout(TFTPWriteClient.TIMEOUT_IN_SECONDS)
 
-        self.transfer_data()
+        try:
+            self.request_write(self.remote_filename, OperationMode.NETASCII)
+
+            self.transfer_data()
+        finally:
+            self.socket.close()
+            self.socket = None
 
     def transfer_data(self):
         for block_number, data_chunk in enumerate(
                 self.iterate_file_chunks(chunk_size=DataPacket.MAX_DATA_LENGTH_IN_BYTES), start=1):
             packet = DataPacket(block_number=block_number, data_chunk=data_chunk)
-            print(f"Generated packet number {block_number}")
+            print(f"Generated data packet number {block_number}")
 
             # Send packet
             try:
@@ -225,7 +229,7 @@ class TFTPWriteClient():
         assert chunk_size > 0
 
         # This could raise exceptions if the file cannot be read or does not exist
-        # But since there isn't any way to handle such exceptions, there is not point to catch them
+        # But since there isn't much to do about that, there is not point in catch such exceptions
         with open(self.local_filename, "rb") as file_obj:
             while True:
                 chunk = file_obj.read(chunk_size)
@@ -237,8 +241,8 @@ class TFTPWriteClient():
                 if len(chunk) < chunk_size:
                     break
 
-
-# Tests - the iteration mechanism
+# Todo - add tests:
+# 1) The block iteration mechanism (For both files which are and those which are not of length which is a multiple of the block size)
 # Add a required tests list
 ### Verify that if I keep getting bad packages, I would still timeout? How? Perhaps hit a stopwatch and check it after every bad packet?
 
