@@ -16,18 +16,16 @@ from TFTPErrorCode import TFTPErrorCode
 class TFTPWriteClient():
     PACKET_SIZE = 512
     TIMEOUT_IN_SECONDS = 5
-    HOST_ADDRESS = "127.0.0.1"
-    HOST_PORT = 69
+    HOST_IP = "127.0.0.1"
+    INITIAL_DEST_PORT = 69
     REMOTE_FILENAME = "RemoteFile.txt"
 
     """Todo - one line null check + assignment"""
-    def __init__(self, local_filename, remote_filename=None, host=None, port=None):
+    def __init__(self, local_filename, remote_filename=None, host=None):
         if local_filename is None:
             raise Exception("Filename was not supplied to TFTPWriteClient constructor")
         if host is None:
-            self.host = TFTPWriteClient.HOST_ADDRESS
-        if port is None:
-            self.port = TFTPWriteClient.HOST_PORT
+            self.host = TFTPWriteClient.HOST_IP
 
         self.local_filename = local_filename
         if remote_filename is None:
@@ -38,21 +36,20 @@ class TFTPWriteClient():
         # UDP / IP
         self.socket = socket(AF_INET, SOCK_DGRAM)
         self.socket.settimeout(TFTPWriteClient.TIMEOUT_IN_SECONDS)
+        self.data_dest_port = None
 
-        # A number chosen (presumably close to) uniformly at random
-        # making the chance of two instances colliding relatively low (Though not 0)
-        self.assign_source_tid()
-
-        self.init_transfer_state()
-
-    def assign_source_tid(self):
-        self.source_tid = random.randint(0, 2 ** 16 - 1)
+    def pick_data_source_port(self):
+        self.data_source_port = random.randint(0, 2 ** 16 - 1)
 
         # TODO - identify (low probability) collisions
         # Assign new TID until one with no collisions is found (Perhaps give up at some point)
 
     def init_transfer_state(self):
         self.last_chunk_acked = -1
+
+        # A number chosen (presumably close to) uniformly at random
+        # making the chance of two instances colliding relatively low (Though not 0)
+        self.pick_data_source_port()
 
     def request_write(self, remote_filename, mode):
         """
@@ -73,35 +70,51 @@ class TFTPWriteClient():
         packet = WRQPacket(filename=remote_filename, mode=mode.name)
 
         try:
-            self.socket.sendto(packet.to_bytes(), (self.host, self.port))
+            self.socket.sendto(packet.to_bytes(), (self.host, TFTPWriteClient.INITIAL_DEST_PORT))
         except TimeoutError:
-            print("Request timed out... aborting")
+            print("Request timed out... Aborting")
             raise
 
         received_ack = False
         while not received_ack:
             received_ack = self.handle_request_write_ack()
 
-    def handle_common_ack(self, request_opcode):
+    def receive_next_packet(self, request_opcode):
         try:
-            response, address = self.socket.recvfrom(1024)  # Todo - Is the choice of buffer size critical?
+            return self.socket.recvfrom(1024)  # Todo - Is the choice of buffer size critical?
         except TimeoutError:
-            print(f"Request of type {request_opcode} response timed out... aborting")
+            print(f"Request of type {request_opcode} response timed out... Aborting")
+            raise
+
+    def handle_common_ack(self, request_opcode):
+        """
+        Verify an ack is received for the request_opcode with the suitable block number. (0 for WRQ, and the
+        :param request_opcode:
+        :return:
+        """
+        try:
+            response, address = self.receive_next_packet(request_opcode)
+        except TimeoutError:
+            print(f"Request of type {request_opcode} response timed out... Aborting")
             raise
 
         # Validate the host generating the response
-        host, port = address
-        if host != self.host:
+        # Ignore responses originating from unexpected hosts
+        if address[0] != self.host:
             return None
 
-        # Check response_opcode
+        # Use the port in the packet for future data messages (TODO - verify it only happens in WRQ)
+        if self.data_dest_port is None:
+           self.data_dest_port = address[1]
+
+        # Verify an ack was received (And raise an exception otherwise)
         response_opcode = struct.unpack("!H", response[0:2])
-        if response_opcode[0] == Opcode.Error.value:
+        if Opcode(response_opcode[0]) == Opcode.Error:
             error_code = struct.unpack("!H", response[2:4])
             tftp_error = TFTPErrorCode(error_code[0])
             error_message = response[4:-2]
             raise ErrorResponseToPacketException(request_opcode, tftp_error, error_message)
-        if response_opcode[0] != Opcode.Ack.value:
+        if Opcode(response_opcode[0]) != Opcode.Ack:
             raise UnexpectedOpcodeException(request_opcode, response_opcode)
 
         return response
@@ -136,14 +149,37 @@ class TFTPWriteClient():
             ErrorResponseToWRQException: if the opcode received from the TFTP server was Error.
             UnexpectedOpcodeException: if the opcode received from the TFTP server was neither Error nor the expected Ack.
         """
-        response = self.handle_common_ack(Opcode.Data)
+        try:
+            response, address = self.receive_next_packet(Opcode.Data)
+        except TimeoutError:
+            print(f"Request of type {Opcode.Data} response timed out... aborting")
+            raise
+
+        # Validate the host generating the response
+        # Ignore responses originating from unexpected hosts
+        host, port = address
+        if host != self.host:
+            return None
+
+        assert port == self.data_dest_port
+
+        # Verify an ack was received (And raise an exception otherwise)
+        response_opcode = struct.unpack("!H", response[0:2])
+        if Opcode(response_opcode[0]) == Opcode.Error:
+            error_code = struct.unpack("!H", response[2:4])
+            tftp_error = TFTPErrorCode(error_code[0])
+            error_message = response[4:-2]
+            raise ErrorResponseToPacketException(Opcode.Data, tftp_error, error_message)
+        if Opcode(response_opcode[0]) != Opcode.Ack:
+            raise UnexpectedOpcodeException(Opcode.Data, response_opcode)
+
         if response is None:
             return False
 
         # Verify block number
         block_num = struct.unpack("!H", response[2:4])
-        if block_num != self.last_chunk_acked + 1:
-            print(f"block_num {block_num} received. Expected {self.last_chunk_acked + 1}")
+        if block_num[0] != self.last_chunk_acked + 1:
+            print(f"block_num {block_num[0]} received. Expected {self.last_chunk_acked + 1}")
             return False
 
         self.last_chunk_acked += 1
@@ -168,7 +204,7 @@ class TFTPWriteClient():
             # Send packet
             try:
                 self.socket.sendto(packet.to_bytes(),
-                                   (TFTPWriteClient.HOST_ADDRESS, TFTPWriteClient.HOST_PORT))
+                                   (TFTPWriteClient.HOST_IP, self.data_dest_port))
             except TimeoutError:
                 print("Request timed out... aborting")
                 raise
@@ -205,5 +241,5 @@ class TFTPWriteClient():
 # Add a required tests list
 
 if __name__ == "__main__":
-    client = TFTPWriteClient(local_filename="C:\TFTP-Root\Remote.txt", remote_filename="target.txt")
+    client = TFTPWriteClient(local_filename="C:\TFTP-Root\Local.txt", remote_filename="Target.txt")
     client.write()
