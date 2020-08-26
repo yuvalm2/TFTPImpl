@@ -262,11 +262,3 @@ class TFTPWriteClient():
 # 1) The block iteration mechanism (For both files which are and those which are not of length which is a multiple of the block size)
 # Add a required tests list
 ### Verify that if I keep getting bad packages, I would still timeout? How? Perhaps hit a stopwatch and check it after every bad packet?
-
-if __name__ == "__main__":
-    #local_filename = ".\\TestInputs\\EmptyFile.txt"
-    local_filename = ".\\TestInputs\\Regular.txt"
-    #local_filename = ".\\TestInputs\\SingleBlockInput.txt"
-    #local_filename = ".\\TestInputs\\TwoBlockInput.txt"
-    client = TFTPWriteClient(local_filename=local_filename, remote_filename=TFTPWriteClient.REMOTE_FILENAME)
-    client.write()
