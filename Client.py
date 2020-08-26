@@ -12,7 +12,7 @@ from PacketTypes.WRQPacket import WRQPacket
 # TODO Didn't read termination yet
 from TFTPErrorCode import TFTPErrorCode
 
-# TODO = clear the socket upon completion
+
 class TFTPWriteClient():
     PACKET_SIZE = 512
     TIMEOUT_IN_SECONDS = 5
@@ -112,27 +112,21 @@ class TFTPWriteClient():
         if address[0] != self.host:
             return False
 
-        # Use the port in the packet for future data messages (TODO - verify it only happens in WRQ)
+        # Use the port in the packet for future data messages
         if self.data_dest_port is None:
-           self.data_dest_port = address[1]
+            self.data_dest_port = address[1]
 
         # Verify an ack was received (And raise an exception otherwise)
-        response_opcode = struct.unpack("!H", response[0:2])
-        if Opcode(response_opcode[0]) == Opcode.Error:
-            error_code = struct.unpack("!H", response[2:4])
-            tftp_error = TFTPErrorCode(error_code[0])
-            error_message = response[4:-2]
-            raise ErrorResponseToPacketException(Opcode.WriteRequest, tftp_error, error_message)
-        if Opcode(response_opcode[0]) != Opcode.Ack:
-            raise UnexpectedOpcodeException(Opcode.WriteRequest, response_opcode)
+        self.verify_ack_was_received(response)
 
+        # The next block to be received should be 1 (The first data packet's block ID)
         self.last_block_acked = 0
 
         return True
 
     def handle_data_ack(self):
         """
-        Awaits an acknowledgement to the last sent data packet. (By block ID)
+        Awaits an acknowledgement for the last sent data packet. (By block ID)
 
         Returns:
             False if an irrelevant packet is received (and dropped)
@@ -157,15 +151,7 @@ class TFTPWriteClient():
 
         assert port == self.data_dest_port
 
-        # Verify an ack was received (And raise an exception otherwise)
-        response_opcode = struct.unpack("!H", response[0:2])
-        if Opcode(response_opcode[0]) == Opcode.Error:
-            error_code = struct.unpack("!H", response[2:4])
-            tftp_error = TFTPErrorCode(error_code[0])
-            error_message = response[4:-2]
-            raise ErrorResponseToPacketException(Opcode.Data, tftp_error, error_message)
-        if Opcode(response_opcode[0]) != Opcode.Ack:
-            raise UnexpectedOpcodeException(Opcode.Data, response_opcode)
+        self.verify_ack_was_received(response)
 
         # Verify block number
         block_num = struct.unpack("!H", response[2:4])
@@ -176,6 +162,27 @@ class TFTPWriteClient():
         self.last_block_acked += 1
 
         return True
+
+    @staticmethod
+    def verify_ack_was_received(response):
+        """
+        Verify an ack was received (And raise a suitable exception otherwise).
+
+        :param response: the encoded TFTP response message
+        :return: None
+
+        Raises:
+            ErrorResponseToPacketException: if an error message was returned by the server
+            UnexpectedOpcodeException: if the response message did not contain the expected opcode (Neither ack nor error)
+        """
+        response_opcode = struct.unpack("!H", response[0:2])
+        if Opcode(response_opcode[0]) == Opcode.Error:
+            error_code = struct.unpack("!H", response[2:4])
+            tftp_error = TFTPErrorCode(error_code[0])
+            error_message = response[4:-2]
+            raise ErrorResponseToPacketException(Opcode.Data, tftp_error, error_message)
+        if Opcode(response_opcode[0]) != Opcode.Ack:
+            raise UnexpectedOpcodeException(Opcode.Data, response_opcode)
 
     def write(self):
         # Request and set up a connection
