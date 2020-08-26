@@ -131,9 +131,9 @@ class TFTPWriteClient():
             error_code = struct.unpack("!H", response[2:4])
             tftp_error = TFTPErrorCode(error_code[0])
             error_message = response[4:-2]
-            raise ErrorResponseToPacketException(request_opcode, tftp_error, error_message)
+            raise ErrorResponseToPacketException(Opcode.WriteRequest, tftp_error, error_message)
         if Opcode(response_opcode[0]) != Opcode.Ack:
-            raise UnexpectedOpcodeException(request_opcode, response_opcode)
+            raise UnexpectedOpcodeException(Opcode.WriteRequest, response_opcode)
 
         self.last_block_acked = 0
 
@@ -229,7 +229,8 @@ class TFTPWriteClient():
         with open(self.local_filename, "rb") as file_obj:
             while True:
                 chunk = file_obj.read(chunk_size)
-                if len(chunk) > 0:
+                print("Chunk length - " + str(len(chunk)))
+                if len(chunk) >= 0:
                     yield chunk
 
                 # The last chunk read was the last
@@ -242,5 +243,8 @@ class TFTPWriteClient():
 ### Verify that if I keep getting bad packages, I would still timeout? How? Perhaps hit a stopwatch and check it after every bad packet?
 
 if __name__ == "__main__":
-    client = TFTPWriteClient(local_filename="C:\TFTP-Root\Local.txt", remote_filename=TFTPWriteClient.REMOTE_FILENAME)
+    #local_filename = "C:\\TFTP-Root\\Regular.txt"
+    #local_filename = "C:\\TFTP-Root\\SingleBlockInput.txt"
+    local_filename = "C:\\TFTP-Root\\TwoBlockInput.txt"
+    client = TFTPWriteClient(local_filename=local_filename, remote_filename=TFTPWriteClient.REMOTE_FILENAME)
     client.write()
