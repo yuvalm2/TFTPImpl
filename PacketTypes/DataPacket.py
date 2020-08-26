@@ -10,7 +10,7 @@ class DataPacket(TFTPPacket):
     # TODO - can I make block_number uint?
     def __init__(self, block_number: int, data_chunk: str) -> object:
         # Format described in figure 5-2 in RFC 1350
-        payload = struct.pack('!H', block_number).decode("utf-8") + data_chunk.decode("utf-8")
+        payload = struct.pack('!H', block_number).decode(TFTPPacket.EXTENDED_ASCII) + data_chunk.decode(TFTPPacket.EXTENDED_ASCII)
 
         super(DataPacket, self).__init__(Opcode.Data, payload)
 

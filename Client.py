@@ -16,22 +16,25 @@ from TFTPErrorCode import TFTPErrorCode
 class TFTPWriteClient():
     PACKET_SIZE = 512
     TIMEOUT_IN_SECONDS = 5
-    HOST_IP = "127.0.0.1"
+    DEFAULT_HOST_IP = "127.0.0.1"
     INITIAL_DEST_PORT = 69
-    REMOTE_FILENAME = "RemoteFile.txt"
+    REMOTE_FILENAME = "Target.txt"
 
     """Todo - one line null check + assignment"""
     def __init__(self, local_filename, remote_filename=None, host=None):
         if local_filename is None:
             raise Exception("Filename was not supplied to TFTPWriteClient constructor")
-        if host is None:
-            self.host = TFTPWriteClient.HOST_IP
-
         self.local_filename = local_filename
+
         if remote_filename is None:
             self.remote_filename = TFTPWriteClient.REMOTE_FILENAME
         else:
             self.remote_filename = remote_filename
+
+        if host is None:
+            self.host = TFTPWriteClient.DEFAULT_HOST_IP
+        else:
+            self.host = host
 
         # UDP / IP
         self.socket = socket(AF_INET, SOCK_DGRAM)
@@ -45,10 +48,12 @@ class TFTPWriteClient():
         # Assign new TID until one with no collisions is found (Perhaps give up at some point)
 
     def init_transfer_state(self):
-        self.last_chunk_acked = -1
+        # Initially no block is acked.
+        # I treat the WRQ as block 1
+        self.last_block_acked = -1
 
         # A number chosen (presumably close to) uniformly at random
-        # making the chance of two instances colliding relatively low (Though not 0)
+        # making the chance of two instances colliding relatively low
         self.pick_data_source_port()
 
     def request_write(self, remote_filename, mode):
@@ -86,22 +91,35 @@ class TFTPWriteClient():
             print(f"Request of type {request_opcode} response timed out... Aborting")
             raise
 
-    def handle_common_ack(self, request_opcode):
+    def handle_request_write_ack(self):
         """
-        Verify an ack is received for the request_opcode with the suitable block number. (0 for WRQ, and the
-        :param request_opcode:
-        :return:
+        Awaits for an acknowledgement to the write request sent previously.
+
+        Returns:
+            False if an irrelevant packet is received (and dropped)
+            True if a suitable ack was received.
+
+        Raises:
+            TimeoutError: if timed out while awaiting response to the write request.
+            ErrorResponseToPacketException: if the opcode received from the TFTP server was Error.
+            UnexpectedOpcodeException: if the opcode received from the TFTP server was neither Error nor Ack.
+        """
+        """
+        Verify an ack is received for the request_opcode with the suitable block number. (0 for WRQ, and for each data
+        packet, the corresponding block number which is >=1)
+        :param request_opcode: Which request type are we waiting for an ack for (used just for logging)
+        :return: The response
         """
         try:
-            response, address = self.receive_next_packet(request_opcode)
+            response, address = self.receive_next_packet(Opcode.WriteRequest)
         except TimeoutError:
-            print(f"Request of type {request_opcode} response timed out... Aborting")
+            print(f"Request of type {Opcode.WriteRequest} response timed out... Aborting")
             raise
 
         # Validate the host generating the response
         # Ignore responses originating from unexpected hosts
         if address[0] != self.host:
-            return None
+            return False
 
         # Use the port in the packet for future data messages (TODO - verify it only happens in WRQ)
         if self.data_dest_port is None:
@@ -117,24 +135,9 @@ class TFTPWriteClient():
         if Opcode(response_opcode[0]) != Opcode.Ack:
             raise UnexpectedOpcodeException(request_opcode, response_opcode)
 
-        return response
+        self.last_block_acked = 0
 
-    def handle_request_write_ack(self):
-        """
-        Awaits for an acknowledgement to the write request sent previously.
-
-        Returns:
-            False if an irrelevant packet is received (and dropped)
-            True if a suitable ack was received.
-
-        Raises:
-            TimeoutError: if timed out while awaiting response to the write request.
-            ErrorResponseToPacketException: if the opcode received from the TFTP server was Error.
-            UnexpectedOpcodeException: if the opcode received from the TFTP server was neither Error nor Ack.
-        """
-        if self.handle_common_ack(Opcode.WriteRequest) is not None:
-            self.last_chunk_acked = 0
-            return True
+        return True
 
     def handle_data_ack(self):
         """
@@ -173,16 +176,13 @@ class TFTPWriteClient():
         if Opcode(response_opcode[0]) != Opcode.Ack:
             raise UnexpectedOpcodeException(Opcode.Data, response_opcode)
 
-        if response is None:
-            return False
-
         # Verify block number
         block_num = struct.unpack("!H", response[2:4])
-        if block_num[0] != self.last_chunk_acked + 1:
-            print(f"block_num {block_num[0]} received. Expected {self.last_chunk_acked + 1}")
+        if block_num[0] != self.last_block_acked + 1:
+            print(f"block_num {block_num[0]} acknowledged. Expected {self.last_block_acked + 1}")
             return False
 
-        self.last_chunk_acked += 1
+        self.last_block_acked += 1
 
         return True
 
@@ -204,16 +204,16 @@ class TFTPWriteClient():
             # Send packet
             try:
                 self.socket.sendto(packet.to_bytes(),
-                                   (TFTPWriteClient.HOST_IP, self.data_dest_port))
+                                   (self.host, self.data_dest_port))
             except TimeoutError:
                 print("Request timed out... aborting")
                 raise
             print(f"Successfully sent packet number {block_number}")
+            print(f"Packet {block_number} contents - {repr(packet)}")
 
             # Await acknowledgement before moving the the next packet
             received_ack = False
             while not received_ack:
-                # Todo - Verify that  the case that I keep getting bad still results in timeout? Hit a stopwatch and check it after every bad packet
                 received_ack = self.handle_data_ack()
 
             print(f"Packet number {block_number} was acknowledged")
@@ -239,7 +239,8 @@ class TFTPWriteClient():
 
 # Tests - the iteration mechanism
 # Add a required tests list
+### Verify that if I keep getting bad packages, I would still timeout? How? Perhaps hit a stopwatch and check it after every bad packet?
 
 if __name__ == "__main__":
-    client = TFTPWriteClient(local_filename="C:\TFTP-Root\Local.txt", remote_filename="Target.txt")
+    client = TFTPWriteClient(local_filename="C:\TFTP-Root\Local.txt", remote_filename=TFTPWriteClient.REMOTE_FILENAME)
     client.write()
