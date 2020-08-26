@@ -12,15 +12,15 @@ from PacketTypes.WRQPacket import WRQPacket
 # TODO Didn't read termination yet
 from TFTPErrorCode import TFTPErrorCode
 
-
+# TODO = clear the socket upon completion
 class TFTPWriteClient():
     PACKET_SIZE = 512
     TIMEOUT_IN_SECONDS = 5
     DEFAULT_HOST_IP = "127.0.0.1"
     INITIAL_DEST_PORT = 69
     REMOTE_FILENAME = "Target.txt"
+    MAX_RETRANSMISSIONS = 3
 
-    """Todo - one line null check + assignment"""
     def __init__(self, local_filename, remote_filename=None, host=None):
         if local_filename is None:
             raise Exception("Filename was not supplied to TFTPWriteClient constructor")
@@ -41,7 +41,7 @@ class TFTPWriteClient():
     def pick_data_source_port(self):
         self.data_source_port = random.randint(0, 2 ** 16 - 1)
 
-        # TODO - identify (low probability) collisions
+        # TODO - identify (low probability) collisions? Is it possible?
         # Assign new TID until one with no collisions is found (Perhaps give up at some point)
 
     def init_transfer_state(self):
@@ -100,12 +100,6 @@ class TFTPWriteClient():
             TimeoutError: if timed out while awaiting response to the write request.
             ErrorResponseToPacketException: if the opcode received from the TFTP server was Error.
             UnexpectedOpcodeException: if the opcode received from the TFTP server was neither Error nor Ack.
-        """
-        """
-        Verify an ack is received for the request_opcode with the suitable block number. (0 for WRQ, and for each data
-        packet, the corresponding block number which is >=1)
-        :param request_opcode: Which request type are we waiting for an ack for (used just for logging)
-        :return: The response
         """
         try:
             response, address = self.receive_next_packet(Opcode.WriteRequest)
@@ -205,24 +199,40 @@ class TFTPWriteClient():
             packet = DataPacket(block_number=block_number, data_chunk=data_chunk)
             print(f"Generated data packet number {block_number}")
 
-            # Send packet
-            try:
-                self.socket.sendto(packet.to_bytes(),
-                                   (self.host, self.data_dest_port))
-            except TimeoutError:
-                print("Request timed out... aborting")
-                raise
-            print(f"Successfully sent packet number {block_number}")
-            print(f"Packet {block_number} contents - {repr(packet)}")
-
-            # Await acknowledgement before moving the the next packet
-            received_ack = False
-            while not received_ack:
-                received_ack = self.handle_data_ack()
-
-            print(f"Packet number {block_number} was acknowledged")
+            retransmission_count = 0
+            while retransmission_count <= TFTPWriteClient.MAX_RETRANSMISSIONS:
+                # Send packet
+                try:
+                    if self.send_single_data_packet(block_number, packet):
+                        # If the attempt was successful, there is no need for further retransmissions
+                        break
+                except TimeoutError:
+                    retransmission_count +=1
 
         print(f"Transmission complete")
+
+    def send_single_data_packet(self, block_number, packet):
+        """
+
+        :param block_number: The data packet's block number
+        :param packet: The packet to send
+        :return: Whether the packet was acknowledged successfully.
+        """
+        try:
+            self.socket.sendto(packet.to_bytes(),
+                               (self.host, self.data_dest_port))
+        except TimeoutError:
+            print("Request timed out... aborting")
+            raise
+        print(f"Successfully sent packet number {block_number}")
+        print(f"Packet {block_number} contents - {repr(packet)}")
+        # Await acknowledgement before moving the the next packet
+        received_ack = False
+        while not received_ack:
+            received_ack = self.handle_data_ack()
+        print(f"Packet number {block_number} was acknowledged")
+
+        return True
 
     # Make sure the last chunk is smaller than chunk size (Possibly of length 0)
     def iterate_file_chunks(self, chunk_size):
